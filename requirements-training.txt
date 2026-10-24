@@ -1,0 +1,4 @@
+# Optional logging integrations only. The trainer always writes CSV and JSON.
+# Keep the working CUDA builds of torch and warp-lang already installed.
+wandb>=0.17
+tensorboard>=2.15
