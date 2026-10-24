@@ -2,7 +2,7 @@ import unittest
 import numpy as np
 import torch
 import mujoco
-from go1_warp import Config, Go1WarpEnv
+from src.envs import Config, Go1WarpEnv
 
 
 class RewardTests(unittest.TestCase):
@@ -32,7 +32,7 @@ class RewardTests(unittest.TestCase):
         e.commands[:, 0] = 1
         e.feet_air_time[:] = .6
         # Controlled floor-foot snapshot to test touchdown bookkeeping.
-        from go1_warp.collisions import ContactSnapshot
+        from src.envs.collisions import ContactSnapshot
         floor = e.model.geom('floor').id
         foot = e.model.geom('FR_foot').id
         snapshot = ContactSnapshot(e._collisions, torch.tensor([[floor, foot]]),

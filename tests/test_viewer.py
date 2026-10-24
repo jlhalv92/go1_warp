@@ -4,8 +4,8 @@ import numpy as np
 import torch
 import mujoco
 import glfw
-from go1_warp import Config, Go1WarpEnv
-from go1_warp.viewer import MujocoViewer
+from src.envs import Config, Go1WarpEnv
+from src.envs.viewer import MujocoViewer
 
 
 class ViewerTests(unittest.TestCase):
@@ -18,8 +18,8 @@ class ViewerTests(unittest.TestCase):
         v.button_left, v.button_right, v.button_middle = True, False, False
         v.last_x = v.last_y = 0
         before = v.camera.elevation
-        with patch('go1_warp.viewer.glfw.get_window_size', return_value=(800, 600)), \
-             patch('go1_warp.viewer.glfw.get_key', return_value=glfw.RELEASE):
+        with patch('src.envs.viewer.glfw.get_window_size', return_value=(800, 600)), \
+             patch('src.envs.viewer.glfw.get_key', return_value=glfw.RELEASE):
             v.mouse_move(None, 40, 30)
         self.assertNotEqual(v.camera.elevation, before)
         distance = v.camera.distance
@@ -84,8 +84,8 @@ class ViewerTests(unittest.TestCase):
         v.frames = 1
         v._next_frame = float('inf')
         getter = Mock(return_value=e.copy_render_data())
-        with patch('go1_warp.viewer.glfw.window_should_close', return_value=False), \
-             patch('go1_warp.viewer.glfw.poll_events'):
+        with patch('src.envs.viewer.glfw.window_should_close', return_value=False), \
+             patch('src.envs.viewer.glfw.poll_events'):
             self.assertTrue(v.render(getter))
         getter.assert_not_called()
         v._closed = True

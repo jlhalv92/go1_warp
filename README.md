@@ -1,199 +1,250 @@
-# Go1 MuJoCo Warp environment
+# Go1 MuJoCo Warp locomotion
 
-A first flat-ground velocity-tracking environment built from your supplied XMLs.
-Native `mujoco_warp` handles batched physics; PyTorch handles control, observations,
-rewards, commands and episode bookkeeping. This is an environment, not a trained
-walking policy or a complete PPO implementation.
+Batched Unitree Go1 velocity tracking with MuJoCo Warp physics, PyTorch control
+and rewards, and continuous PPO. Training and playback select their environment
+through the same factory. The default `flat` environment includes collision
+penalties and foot airtime rewards; `blind` retains physical collisions but
+omits contact queries and contact rewards.
 
-## Run
+## Install
 
-Use Python 3.10+ and an NVIDIA GPU with a driver compatible with your installed
-Warp and PyTorch CUDA builds. Install a CUDA-enabled PyTorch build using the
-instructions on https://pytorch.org/get-started/locally/, then:
-
-```bash
-python -m pip install -r go1_warp/requirements.txt
-python -m go1_warp.demo --num-envs 1024 --device cuda:0
-```
-
-Run commands from the directory containing `go1_warp/` after extracting the ZIP.
-First execution compiles Warp kernels and can take time. Start with 16 worlds
-before increasing the batch size; monitor contact/constraint capacity warnings.
-
-CPU reference smoke test (ordinary MuJoCo, not Warp):
+Use Python 3.10+ (the development environment uses Python 3.12). Install a
+CUDA-enabled PyTorch build compatible with your NVIDIA driver, then run from
+the repository root:
 
 ```bash
-python -m go1_warp.demo --backend mujoco --device cpu --num-envs 4 --steps 100
-python -m unittest discover -s go1_warp/tests -v
+python -m pip install -r requirements.txt
+# Optional W&B / TensorBoard integrations:
+python -m pip install -r requirements-training.txt
 ```
 
-The demo uses zero actions to test the standing PD controller. It does not
-produce a walking gait. `--render` opens the adapted custom GLFW viewer and
-updates it during the rollout. It displays one selected world, not the whole batch.
+The working simulator versions are MuJoCo/MuJoCo Warp 3.16.0 and Warp 1.18.0.
+Training requires an NVIDIA GPU for the `warp` backend. A slow CPU reference
+backend is available with `--backend mujoco --device cpu`.
+
+## Structure
+
+```text
+train.py                         training entry point
+play.py                          visualization / fixed-step evaluation entry point
+benchmark_eval.py                evaluation timing across environment counts
+demo.py                          zero-action simulation smoke test
+src/
+    models/                      XML files and assets/ meshes
+    envs/
+        config.py                EnvConfig dataclass
+        go1.py                   fast contact-enabled flat environment
+        go1_blind.py             contact-blind reward variant
+        domain_randomized.py     DomainRandomizationConfig and randomized environment
+        collisions.py            geom-group contact helpers
+        model.py                 model loading
+        viewer.py                custom GLFW viewer
+    algorithms/
+        config.py                TrainConfig, PlayConfig and argparse integration
+        trainer.py               rollout collection, updates, logging and checkpoints
+        ppo.py                   PPO, GAE and rollout storage
+        evaluation.py            fixed-window evaluation
+        playback.py              checkpoint playback
+        paths.py                 repository-relative output paths
+    networks/
+        actor_critic.py          SiLU / LayerNorm actor, critic and Gaussian policy
+runs/                            checkpoints and resolved configuration (generated)
+logs/                            CSV, TensorBoard and W&B logs (generated)
+tests/
+docs/
+```
+
+XML includes and mesh paths remain relative to `src/models/`. Default asset,
+run and logging paths are resolved from the repository location, independently
+of the shell's current working directory. Relative custom XML/checkpoint/output
+paths also resolve from the repository root; absolute paths are accepted.
+
+## Train
 
 ```bash
-python -m go1_warp.demo --num-envs 16 --device cuda:0 --render --world-id 0 --steps 10000
-# CPU reference with the same viewer:
-python -m go1_warp.demo --backend mujoco --device cpu --num-envs 4 --render
+python train.py \
+    --experiment-name LLC_PPO --run-id 0 \
+    --n-envs 4096 --n-epochs 150 \
+    --n-steps-per-fit 24 --n-steps 240 \
+    --n-epochs-policy 5 --n-minibatches 4 \
+    --eval-envs 10 --eval-every 5 \
+    --device cuda:0 \
+    --solver-iterations 100 --solver-ls-iterations 50
 ```
 
-In your own control loop, call `env.render(world_id=0)` once per control step,
-preferably before resetting completed worlds. It returns False when closed;
-break out of the loop or continue headless, and always call `env.close()` in
-`finally`. It runs on the main thread and needs a working desktop/OpenGL display.
-SPACE pauses the calling loop (all worlds); TAB switches static/follow camera;
-S/F change playback speed; H toggles overlays; C toggles contacts/constraints;
-T toggles transparency; 0-5 toggle geom groups; ESC closes the viewer.
+These outputs have stable, user-selected names (no timestamp or implicit seed
+suffix):
 
-Default real-time pacing slows the full batch for visualization. Use
-`env.render(world_id=0, throttle=False)` or demo `--unpaced` for unpaced
-simulation with a display capped at 60 Hz. S/F affect paced mode only.
-Snapshots are copied only on frames actually drawn, including while paused.
-The fast path copies the selected world's qpos/qvel/ctrl to a reusable CPU
-MjData and calls CPU `mj_forward` for visualization. This never steps the GPU.
-Pressing C automatically enables full `mjw.get_data_into` readback, preserving
-the backend's contact and solver fields. You can also force this using
-`env.render(world_id=0, full_state=True)`. Full readback can transfer large batched
-buffers internally and synchronizes GPU work, so use it for debugging rather
-than throughput measurements. Solver/contact geometry reflects the last backend
-forward evaluation (as in ordinary MuJoCo stepping).
-
-To use an existing external viewer instance, pass a lazy snapshot callback:
-
-```python
-from go1_warp.viewer import MujocoViewer
-viewer = MujocoViewer(env.model, env.dt)
-try:
-    # Inside your simulation loop, after env.step(actions):
-    running = viewer.render(lambda: env.copy_render_data(
-        world_id=0, full_state=viewer.show_contacts))
-finally:
-    viewer.close()
+```text
+runs/LLC_PPO/run_0/config.json
+runs/LLC_PPO/run_0/best.pt
+runs/LLC_PPO/run_0/last.pt
+logs/LLC_PPO/run_0/train.csv
+logs/LLC_PPO/run_0/evaluation.csv
+logs/LLC_PPO/run_0/runtime.csv
 ```
 
-The viewer owns GLFW initialization/termination. If embedding alongside another
-GLFW application, share that lifecycle explicitly. Structural model changes
-require closing/recreating both the environment and its viewer.
+`--experiment-name` defaults to `LLC_PPO`; `--run-id` defaults to `0`.
+Choose another run ID for a new run. Reusing an existing output location requires
+`--resume`, which appends CSV rows rather than overwriting earlier logs.
+`--output-dir` and `--log-dir` change the two parent directories.
 
-## Interface
+`last.pt` is updated after each completed epoch. `best.pt` is updated when the
+fixed-window evaluation return improves, including the initial evaluation.
+Numbered epoch checkpoints are optional:
 
-```python
-import torch
-from go1_warp import Config, Go1WarpEnv
-
-env = Go1WarpEnv(Config(num_envs=1024, device='cuda:0'))
-obs, info = env.reset(seed=42)
-actions = torch.zeros((env.num_envs, 12), device=env.device)
-next_obs, reward, terminated, truncated, info = env.step(actions)
-# Save next_obs and evaluate next values BEFORE reset.
-done_ids = torch.where(terminated | truncated)[0]
-obs, info = env.reset(done_ids)
+```bash
+# Save epoch_0001.pt, epoch_0002.pt, ... in addition to best/last:
+python train.py --experiment-name LLC_PPO --run-id 1 --save-epochs --save-every 1
+# Save every tenth epoch (10 is the default numbered-checkpoint interval):
+python train.py --experiment-name LLC_PPO --run-id 2 --save-epochs
+# Only best and last:
+python train.py --experiment-name LLC_PPO --run-id 3 --no-save-epochs
 ```
 
-`reset(ids)` returns observations for the entire batch. `step()` never autoresets
-and refuses to advance if any world still needs reset. Tensors returned by
-`observations()` and rewards own their storage; `qpos`, `qvel`, `ctrl`, and other
-environment fields are mutable live state. Do not edit those directly during
-training. Commands are in `env.commands` and can be set manually (they are
-resampled every five seconds and on reset).
+For compatibility, explicitly supplying `--save-every N` also enables numbered
+checkpoints when N > 0; `--save-every 0` disables them. An explicit
+`--no-save-epochs` takes precedence.
 
-| Quantity | Shape | Meaning |
+Resume to a larger **total** epoch count:
+
+```bash
+python train.py --resume runs/LLC_PPO/run_0/last.pt --n-epochs 200
+```
+
+Policy/optimizer and training counters resume; simulation episodes restart.
+Configuration precedence is dataclass defaults, then saved configuration, then
+explicit CLI arguments. Architecture width and gamma must match on resume.
+
+## Dataclasses and command-line configuration
+
+Edit defaults in `EnvConfig`, `DomainRandomizationConfig`, `TrainConfig` or
+`PlayConfig`, or override them through argparse:
+
+```bash
+python train.py --help
+python play.py --help
+python train.py --experiment-name graph_test --run-id 0 \
+    --no-physics-graph --no-fast-contacts --debug-checks \
+    --solver-iterations 100 --solver-ls-iterations 50
+```
+
+`GO1_WARP_*` environment-variable overrides have been removed. Boolean settings
+have positive/negative flags; physics graphs and fast contact rewards are enabled
+by default. Debug checks are disabled by default because Python tensor-value
+checks synchronize the GPU. Legacy aliases such as `--n-envs`, `--name-exp`,
+`--target-vx` and underscore spellings remain accepted. The canonical dataclass
+fields are `num_envs`, `experiment_name` and `command_vx/command_vy/command_wz`.
+The original PPO defaults are retained; the 4096-world command above explicitly
+overrides them with your working training configuration.
+
+Use `--log` for W&B (`--wandb-mode offline` is supported) and `--tensorboard` for
+TensorBoard. Both integrations write under the selected `logs/<experiment>/run_<id>`.
+`--profile-runtime` and `--profile-collection` retain the existing diagnostic
+measurements and their synchronization overhead.
+
+## Play / evaluate
+
+```bash
+python play.py runs/LLC_PPO/run_0/best.pt --num-envs 1
+python play.py runs/LLC_PPO/run_0/best.pt --num-envs 10 --headless --steps 1000
+python play.py runs/LLC_PPO/run_0/best.pt --unpaced --world-id 0
+```
+
+Saved physics, environment variant and randomization settings are inherited.
+Explicit CLI options override them. Playback has its own runtime defaults for
+world count (1), seed (10000), device (`cuda:0`) and backend (`warp`). Use
+`--backend mujoco --device cpu` for CPU playback. Old dictionary/state-dict
+checkpoints retain their network keys and load through the compatibility filter;
+old checkpoints without an environment selector default to `flat`. Select
+`--environment blind` explicitly for a policy trained with the blind variant.
+
+Headless evaluation always runs exactly `steps * num_envs` transitions; there
+are no episode quotas. `R` is mean undiscounted **window return** and `J` is mean
+discounted window return. Their discount does not restart at resets. Completed
+per-episode diagnostics are logged separately. Playback prints elapsed evaluation
+time and transition throughput; the first run can include first-use warmup.
+Training SPS counts transitions across all worlds, not batched step calls.
+
+Viewer: SPACE pauses, TAB changes camera, S/F adjust paced speed, H toggles the
+menu, and C displays backend contact forces/constraints. Contact display uses
+full solver readback and can reduce rendering throughput. `--unpaced` removes
+real-time pacing while limiting display refreshes to 60 Hz.
+
+For a warmed-up fixed-work evaluation benchmark:
+
+```bash
+python benchmark_eval.py runs/LLC_PPO/run_0/best.pt \
+    --env-counts 1 10 100 1024 4096 --steps 1000 --warmups 1 --repeats 3
+```
+
+## Domain-randomized environment
+
+```bash
+python train.py --environment domain_randomized \
+    --experiment-name LLC_PPO_DR --run-id 0 \
+    --n-envs 4096 --n-steps-per-fit 24 --n-steps 240 \
+    --n-epochs-policy 5 --n-minibatches 4 --device cuda:0
+```
+
+The defaults follow Table I of
+[Rapid Locomotion via Reinforcement Learning (Margolis et al.)](https://arxiv.org/abs/2205.02824):
+
+| Parameter | Default uniform range | Application |
 |---|---|---|
-| actions | (N, 12) | Joint position residuals, clipped to [-1,1] |
-| observations | (N, 48) | Detailed order below |
-| reward | (N,) | Sum of reward rates multiplied by control dt |
-| terminated | (N,) bool | Low base height, excessive tilt, or nonfinite state |
-| truncated | (N,) bool | Episode time limit |
+| Ground sliding friction | 0.05–4.0 | Floor contact coefficient |
+| Target restitution | 0–1 | Approximate ground spring/damper response |
+| Payload mass | −1 to +3 kg | Added to trunk mass |
+| Body COM offset | −0.10 to +0.10 m per axis | Trunk inertial position |
+| Motor strength | 0.9–1.1 per motor | Multiplies actuator gain after commanded-torque limits |
 
-For GAE use `~terminated` for the value bootstrap and
-`~(terminated | truncated)` for recursion across transitions. Bootstrap timeouts
-from the pre-reset observation. Both flags may be true on the same transition.
-Nonfinite terminal observations must not be evaluated for bootstrap.
+Each world samples its own values with a dedicated seeded Torch generator.
+Trunk inertia scales proportionally with its randomized mass at fixed shape.
+The floor receives higher contact priority so its friction/reference settings
+control robot–ground contacts; robot–robot materials retain their XML values.
+The actor/critic retain the existing 48-D observation and 12-D action dimensions;
+this adds domain randomization, not the paper's teacher/student adaptation,
+privileged observations or velocity curriculum.
 
-Observation slices:
-
-| Slice | Quantity | Scale |
-|---|---|---|
-| 0:3 | Body-frame linear velocity | 2.0 |
-| 3:6 | Body-frame angular velocity | 0.25 |
-| 6:9 | Projected unit gravity | 1.0 |
-| 9:12 | Desired body vx, vy, yaw rate | 1.0 |
-| 12:24 | Joint position minus home pose | 1.0 |
-| 24:36 | Joint velocity | 0.05 |
-| 36:48 | Most recently applied action | 1.0 |
-
-Joint order follows XML motors: FR hip/thigh/calf, FL hip/thigh/calf,
-RR hip/thigh/calf, RL hip/thigh/calf. Nominal angles come from `home.qpos`:
-`[-.1,-.9,1.8, .1,.9,-1.8, .1,-.9,1.8, -.1,.9,-1.8]`.
-Do not replace this with a conventional Go1 sign convention.
-
-## Control and task defaults
-
-- Original XML timestep: 0.005 s (200 Hz); decimation 4 gives 50 Hz control.
-- Actions specify `home + 0.25 * action` radians, clipped to joint limits.
-- PD torques recomputed every physics step: kp=30, kd=0.8.
-- XML motor torque limits retained: 23.7 Nm hips/thighs, 35.55 Nm calves.
-- Torque actuators are preserved. The position-like `home.ctrl` values are
-  deliberately ignored; reset initializes torque to zero.
-- Commands: vx in [-1,1] m/s, vy in [-0.5,0.5] m/s, yaw in [-1,1] rad/s.
-- Episodes: 20 s; failure if base z<0.16 m or projected gravity z>-0.5.
-- Initial pose: supplied home pose, with +/-0.03 rad joint noise.
-- Rewards: xy/yaw tracking, with vertical velocity, roll/pitch angular velocity,
-  tilt, torque and action-change penalties. These are starting coefficients;
-  locomotion learning and gait quality have not been validated.
-
-## Meshes and model handling
-
-The archive includes unchanged copies of the uploaded XMLs and all six uploaded
-STL assets in `go1_warp/models/assets/`. The robot XML already declares
-`meshdir="assets"` and references `trunk.stl`, `hip.stl`, `thigh_mirror.stl`,
-`calf.stl`, and `thigh.stl`. `shell.stl` is included for completeness but is not
-referenced by the supplied XML; no extra shell geom has been added.
-
-Default `Config(collision_only=False)` now loads the visual meshes. No XML
-changes are needed. Paths resolve relative to the model, so the asset directory
-does not depend on the working directory.
-
-For collision-only debugging use `Config(collision_only=True)` or the demo's
-`--collision-only` flag. This removes visual mesh geoms and mesh declarations
-in memory while retaining all explicit inertias, joints and collision geoms.
-The viewer enables collision geom group 3 automatically when meshes are absent;
-normal mesh rendering uses group 2 with collision group 3 initially hidden.
-
-Original timestep, solver, contact settings and collision masks are retained.
-No rough terrain, domain randomization beyond reset joint noise, contact
-observations, privileged critic, CUDA graphs or Gymnasium
-VectorEnv adapter is included yet. This class has a tensor API with separate
-termination and truncation flags; it does not subclass Gymnasium VectorEnv.
-
-## PPO training
-
-See **TRAINING.md** for the new trainer, exact reference hyperparameters,
-RSL-RL modifications, R/J/entropy logging, checkpoints, and playback.
+By default, domains are sampled at initialization and retained across resets.
+This avoids recomputing mass/inertia constants during every reset. To resample
+only completed worlds on reset, enable:
 
 ```bash
-python -m go1_warp.train --n-envs 16 --device cuda:0
+python train.py --environment domain_randomized --experiment-name LLC_PPO_DR \
+    --run-id 1 --dr-resample-on-reset \
+    --dr-friction-range 0.2 1.5 \
+    --dr-payload-mass-range -0.5 2.0 \
+    --dr-com-range -0.03 0.03 \
+    --dr-motor-strength-range 0.9 1.1 \
+    --dr-restitution-range 0.0 0.5
 ```
 
-This uses the working CUDA-enabled PyTorch and Warp builds already installed.
-Do not reinstall requirements merely to add the trainer. Optional W&B and
-TensorBoard dependencies are listed separately in requirements-training.txt.
+On Warp, per-world model fields and derived constants are allocated before graph
+capture, and updated in place. `mujoco_warp.set_const` refreshes mass/inertia
+constants; optional per-reset resampling adds this work to reset handling. The
+CPU reference uses a separate MjModel for each world. Checkpoints contain the
+resolved ranges and sampled domain parameters for inspection/reproducibility.
+Playback regenerates evaluation domains from its evaluation seed; it does not
+reuse the training worlds' domain assignments.
 
-## Validation and limitations
+**Restitution approximation:** MuJoCo's compliant-contact solver has no direct
+PhysX-style restitution coefficient. We convert the sampled target to a damping
+ratio using `zeta = -log(e)/sqrt(pi² + log(e)²)` and direct-format negative
+`solref` stiffness/damping (`--dr-contact-stiffness`, default 1000). Zero is
+critically damped and one is capped slightly below one. Actual rebound depends
+on impedance, timestep and solver convergence; this is not an exact match to
+PhysX restitution. The broad paper ranges can be narrowed through CLI arguments.
 
-Validated with MuJoCo 3.16.0, MuJoCo Warp 3.16.0, Warp 1.18.0 and CPU PyTorch
-2.14.1. See VALIDATION.md for the checks actually run. Requirements are pinned
-to this simulator stack; install the appropriate PyTorch CUDA wheel separately.
-GPU simulation and training throughput have not been executed here because
-this machine has no NVIDIA GPU. No speedup or learned performance is claimed.
+## Validation
 
-Torch and Warp share the current Torch CUDA stream for reset and stepping.
-Keep calls on the same stream; cross-stream policy code must establish its own
-dependencies. A full forward pass follows masked resets to rebuild batched
-contact bookkeeping. Contact allocation defaults are conservative starting
-values, not capacity guarantees.
+```bash
+python -m unittest discover -s tests -v
+python demo.py --environment flat --backend mujoco --device cpu --num-envs 3 --steps 20
+```
 
-Official references:
-- https://mujoco.readthedocs.io/en/stable/mjwarp/index.html
-- https://mujoco.readthedocs.io/en/stable/mjwarp/api.html
-- https://nvidia.github.io/warp/latest/user_guide/interoperability/pytorch.html
+Tests cover PPO/GAE, reset isolation, collision and airtime rewards, configuration
+precedence, checkpoint/log output, playback, asset paths, and domain physics.
+Real Warp CPU kernels validate batched randomized model fields and derived
+constants against separate CPU MuJoCo models. CUDA graph execution and RTX 4090
+throughput require a GPU validation run; no new speed claim is made here.

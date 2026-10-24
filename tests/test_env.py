@@ -1,8 +1,8 @@
 import unittest
 import numpy as np
 import torch
-from go1_warp import Config, Go1WarpEnv
-from go1_warp.env import rotate_inverse
+from src.envs import Config, Go1WarpEnv
+from src.envs.go1 import rotate_inverse
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -41,7 +41,7 @@ class EnvironmentTests(unittest.TestCase):
         torch.testing.assert_close(e.qpos[1], first)
 
     def test_timeout_and_explicit_reset(self):
-        e = self.make(episode_seconds=.02)
+        e = self.make(episode_seconds=.02, debug_checks=True)
         o, r, terminated, truncated, _ = e.step(torch.zeros(3, 12))
         self.assertTrue(bool(truncated.all()))
         self.assertFalse(bool(terminated.any()))

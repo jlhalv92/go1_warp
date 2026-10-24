@@ -3,9 +3,9 @@ from pathlib import Path
 import unittest
 import torch
 from torch.distributions import Normal, kl_divergence
-from go1_warp.networks import ActorCritic, PolicyNetwork, ValueNetwork
-from go1_warp.ppo import compute_gae, EpisodeReturns, gaussian_kl, adapt_lr
-from go1_warp.train import parse_args, train
+from src.networks import ActorCritic, PolicyNetwork, ValueNetwork
+from src.algorithms.ppo import compute_gae, EpisodeReturns, gaussian_kl, adapt_lr
+from src.algorithms.trainer import parse_args, train
 
 
 class PPOTests(unittest.TestCase):
@@ -62,7 +62,7 @@ class PPOTests(unittest.TestCase):
 
     def test_reference_defaults(self):
         a = parse_args([])
-        self.assertEqual((a.n_envs,a.n_steps_per_fit,a.n_minibatches,a.n_epochs_policy),(100,1000,20,10))
+        self.assertEqual((a.num_envs,a.n_steps_per_fit,a.n_minibatches,a.n_epochs_policy),(100,1000,20,10))
         self.assertEqual((a.lr,a.gamma,a.lam,a.eps_ppo,a.ent_coeff),(1e-3,.99,.95,.2,.01))
         self.assertEqual(a.n_features,256)
 
@@ -71,8 +71,9 @@ class PPOTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             common = ['--backend','mujoco','--device','cpu','--n-envs','2','--n-steps','16',
                       '--n-steps-per-fit','8','--n-minibatches','3','--n-epochs-policy','2',
-                      '--n-features','16','--n-episodes-test','3','--eval-envs','2',
-                      '--episode-seconds','.08','--collision-only','--output-dir',folder]
+                      '--n-features','16','--n-steps-test','3','--eval-envs','2',
+                      '--episode-seconds','.08','--collision-only','--output-dir',folder+'/runs',
+                      '--log-dir',folder+'/logs','--save-epochs','--save-every','1']
             args = parse_args(common + ['--n-epochs','1'])
             torch.manual_seed(args.seed)
             initial = {k: v.clone() for k, v in ActorCritic(n_features=16).state_dict().items()}
@@ -80,16 +81,23 @@ class PPOTests(unittest.TestCase):
             ckpt = torch.load(first/'last.pt',map_location='cpu',weights_only=False)
             self.assertEqual(ckpt['global_step'],32)
             self.assertEqual(ckpt['update'],2)
-            with (first/'evaluation.csv').open() as f:
+            self.assertEqual(first, Path(folder)/'runs'/'LLC_PPO'/'run_0')
+            self.assertTrue((first/'best.pt').exists())
+            self.assertTrue((first/'epoch_0001.pt').exists())
+            evaluation_log = Path(folder)/'logs'/'LLC_PPO'/'run_0'/'evaluation.csv'
+            with evaluation_log.open() as f:
                 logs = list(csv.DictReader(f))
             self.assertEqual(len(logs),2)  # Initial and end-of-epoch evaluation.
-            self.assertEqual(int(logs[-1]['eval_episodes']),3)
+            self.assertEqual(int(logs[-1]['eval_steps']),3)
+            self.assertEqual(int(logs[-1]['eval_transitions']),6)
             self.assertTrue(float(logs[-1]['R']) == float(logs[-1]['R']))
             self.assertTrue(any(not torch.equal(ckpt['agent'][k], initial[k]) for k in ckpt['agent']))
             resumed = train(parse_args(common + ['--n-epochs','2','--resume',str(first/'last.pt')]))
             final = torch.load(resumed/'last.pt',map_location='cpu',weights_only=False)
             self.assertEqual((final['epoch'],final['global_step'],final['update']),(2,64,4))
             self.assertTrue(all(bool(torch.isfinite(t).all()) for t in final['agent'].values()))
+            with evaluation_log.open() as f:
+                self.assertEqual(len(list(csv.DictReader(f))), 4)
 
 
 if __name__ == '__main__':

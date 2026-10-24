@@ -4,3 +4,4 @@ warp-lang==1.18.0
 torch>=2.2
 numpy>=1.24
 glfw>=2.6
+tqdm>=4.66
