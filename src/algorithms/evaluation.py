@@ -41,6 +41,8 @@ def evaluate(agent,
     devices = ([device.index if device.index is not None else torch.cuda.current_device()]
                if device.type == 'cuda' else [])
     was_training = agent.training
+    was_evaluating=getattr(env,'evaluation_mode',False)
+    if hasattr(env,'set_evaluation_mode'): env.set_evaluation_mode(True)
     agent.eval()
     try:
         with torch.random.fork_rng(devices=devices):
@@ -91,3 +93,4 @@ def evaluate(agent,
             }
     finally:
         agent.train(was_training)
+        if hasattr(env,'set_evaluation_mode'): env.set_evaluation_mode(was_evaluating)

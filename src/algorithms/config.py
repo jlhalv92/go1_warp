@@ -5,12 +5,17 @@ from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
 
 from src.envs.domain_randomized import DomainRandomizationConfig
+from src.envs.terrain_config import TerrainConfig, TERRAIN_TYPES
 from .paths import rooted
 
 
 @dataclass
-class TrainConfig(DomainRandomizationConfig):
+class TrainConfig(TerrainConfig):
     environment: str = 'flat'
+    kp: float = 30.
+    kd: float = .8
+    reset_joint_noise: float = .03
+    command_seconds: float = 5.
     num_envs: int = 100
     command_vx: float = 1.5
     command_vy: float = .8
@@ -55,8 +60,12 @@ class TrainConfig(DomainRandomizationConfig):
 
 
 @dataclass
-class PlayConfig(DomainRandomizationConfig):
+class PlayConfig(TerrainConfig):
     environment: str = 'flat'
+    kp: float = 30.
+    kd: float = .8
+    reset_joint_noise: float = .03
+    command_seconds: float = 5.
     num_envs: int = 1
     seed: int = 10000
     checkpoint: str = ''
@@ -78,7 +87,8 @@ ALIASES = {
     'use_physics_graph': ('--physics-graph',),
     'log': ('--track',),
 }
-CHOICES = {'environment': ('flat', 'domain_randomized', 'blind'),
+CHOICES = {'environment': ('flat', 'domain_randomized', 'blind', 'terrain'),
+           'terrain_types': TERRAIN_TYPES, 'terrain_observation_layout': ('legacy','compact'),
            'backend': ('warp', 'mujoco'), 'schedule': ('adaptive', 'fixed'),
            'wandb_mode': ('online', 'offline', 'disabled')}
 
@@ -111,7 +121,8 @@ def config_parser(cls, description):
         elif typ is bool:
             opts['action'] = argparse.BooleanOptionalAction
         elif get_origin(typ) is tuple:
-            opts.update(type=float, nargs=2)
+            item_type=get_args(typ)[0]
+            opts.update(type=item_type,nargs='+' if Ellipsis in get_args(typ) else len(get_args(typ)))
         else:
             opts['type'] = next((t for t in get_args(typ) if t is not type(None)), typ)
         if name in CHOICES:
@@ -147,6 +158,10 @@ def _construct(cls, explicit, saved=None):
     allowed = {field.name for field in fields(cls)}
     values = {key: value for key, value in (saved or {}).items() if key in allowed}
     values.update(explicit)
+    if values.get('environment')=='terrain':
+        defaults=TerrainConfig()
+        for name in ('kp','kd','reset_joint_noise','command_seconds'):
+            values.setdefault(name,getattr(defaults,name))
     for field in fields(cls):
         if field.name in values and isinstance(field.default, tuple):
             values[field.name] = tuple(values[field.name])
@@ -163,6 +178,8 @@ def validate_environment(config):
     if config.episode_seconds <= 0 or config.command_seconds <= 0:
         raise ValueError('Episode and command durations must be positive')
     config.validate_randomization()
+    if config.environment=='terrain':
+        config.validate_terrain()
 
 
 def parse_train_args(argv=None):
@@ -215,13 +232,15 @@ def parse_play_args(argv=None):
 def resolve_play_config(config, checkpoint):
     # Saved physics/DR settings are inherited; playback has its own runtime defaults.
     saved = {key: value for key, value in saved_values(checkpoint).items()
-             if key in {field.name for field in fields(DomainRandomizationConfig)}}
+             if key in {field.name for field in fields(TerrainConfig)}}
     for name in ('num_envs', 'device', 'backend', 'seed'):
         saved.pop(name, None)
     from dataclasses import asdict
     explicit_fields = getattr(config, '_explicit_fields', set(asdict(config)))
     explicit = {name: value for name, value in asdict(config).items() if name in explicit_fields}
     result = _construct(PlayConfig, explicit, saved)
+    if 'terrain_start_level' in explicit and 'terrain_eval_level' not in explicit:
+        result.terrain_eval_level=result.terrain_start_level
     result.checkpoint = str(rooted(result.checkpoint))
     validate_environment(result)
     if not 0 <= result.world_id < result.num_envs:

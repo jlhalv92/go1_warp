@@ -115,7 +115,8 @@ class Logger:
 def make_config(args, num_envs, seed):
     from src.envs.config import EnvConfig
     from src.envs.domain_randomized import DomainRandomizationConfig
-    cls = DomainRandomizationConfig if args.environment == 'domain_randomized' else EnvConfig
+    from src.envs.terrain_config import TerrainConfig
+    cls = ({'domain_randomized':DomainRandomizationConfig,'terrain':TerrainConfig}.get(args.environment,EnvConfig))
     return cls.from_dict(dict(asdict(args), num_envs=num_envs, seed=seed))
 
 
@@ -126,6 +127,9 @@ def save_checkpoint(path, agent, optimizer, args, env, epoch, update, global_ste
                    python_rng=random.getstate(), env_rng=env.rng.get_state(),
                    cuda_rng=torch.cuda.get_rng_state_all() if env.device.type == 'cuda' else None)
     payload['schema_version'] = 2
+    payload['observation_dim']=env.num_observations
+    if hasattr(env,'get_curriculum_state'):
+        payload['environment_state']=env.get_curriculum_state()
     if hasattr(env, 'domain_parameters'):
         payload['domain_parameters'] = {name: value.detach().cpu().clone()
                                         for name, value in env.domain_parameters.items()}
@@ -156,6 +160,8 @@ def train(args):
                 if old[name] != getattr(args, name):
                     raise ValueError(f'Resume requires matching {name}: saved={old[name]}, requested={getattr(args, name)}')
             agent.load_state_dict(ckpt['agent'])
+            if 'environment_state' in ckpt and hasattr(env,'load_curriculum_state'):
+                env.load_curriculum_state(ckpt['environment_state'])
             optimizer.load_state_dict(ckpt['optimizer'])
             for group in optimizer.param_groups:
                 for param in group['params']:

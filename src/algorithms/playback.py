@@ -19,9 +19,14 @@ def play(config):
     env = None
     try:
         env = make_env(make_config(config, config.num_envs, config.seed))
+        if hasattr(env,'set_evaluation_mode'): env.set_evaluation_mode(True)
         print(f'Environment: {type(env).__module__}.{type(env).__name__}')
         agent = ActorCritic(env.num_observations, env.num_actions,
                             checkpoint['args']['n_features']).to(env.device)
+        expected=checkpoint.get('observation_dim',checkpoint['agent']['actor.fc1.weight'].shape[1])
+        if expected!=env.num_observations:
+            raise ValueError(f'Checkpoint expects {expected} observations, but the environment supplies '
+                             f'{env.num_observations}. Use matching terrain/layout/grid settings.')
         agent.load_state_dict(checkpoint['agent'])
         agent.eval()
         if config.headless:

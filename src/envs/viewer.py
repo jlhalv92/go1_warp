@@ -159,6 +159,8 @@ class MujocoViewer:
         self.create_overlay()
         mujoco.mjv_updateScene(self.model, data, self.scene_option, None,
                               self.camera, mujoco.mjtCatBit.mjCAT_ALL, self.scene)
+        callback=getattr(self,'scene_callback',None)
+        if callback is not None: callback(self)
         self.viewport.width, self.viewport.height = glfw.get_framebuffer_size(self.window)
         if self.viewport.width > 0 and self.viewport.height > 0:
             mujoco.mjr_render(self.viewport, self.scene, self.context)

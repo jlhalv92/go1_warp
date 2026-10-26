@@ -12,6 +12,9 @@ def make_env(config):
     if config.environment == 'blind':
         from .go1_blind import Go1WarpEnv as BlindGo1Env
         return BlindGo1Env(config)
+    if config.environment == 'terrain':
+        from .go1_terrain import TerrainGo1Env
+        return TerrainGo1Env(config)
     raise ValueError(f'Unknown environment: {config.environment}')
 
 
