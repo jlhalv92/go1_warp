@@ -4,8 +4,23 @@ Use on the main thread. `render` accepts MjData or a zero-argument snapshot
 callback. The callback is called only when a frame will actually be drawn.
 """
 import time
+from weakref import WeakSet
 import glfw
 import mujoco
+
+
+_active_viewers = WeakSet()
+
+
+def current_glfw_context():
+    """Query our display context without initializing GLFW in a headless run.
+
+    The current window may belong to another environment (for example the
+    training viewer while evaluation records a separate environment).
+    """
+    if any(not viewer._closed for viewer in _active_viewers):
+        return glfw.get_current_context()
+    return None
 
 
 class MujocoViewer:
@@ -28,14 +43,18 @@ class MujocoViewer:
         self._next_frame = time.perf_counter()
         self._closed = False
         self.world_id = 0
+        self.joystick = False
+        self.command_values = (0., 0., 0.)
         self.window = self.context = self.scene = None
         if not glfw.init():
             raise RuntimeError('GLFW initialization failed; a desktop display is required')
         try:
+            glfw.window_hint(glfw.VISIBLE, glfw.TRUE)
             glfw.window_hint(glfw.SCALE_TO_MONITOR, glfw.TRUE)
             self.window = glfw.create_window(width, height, 'Go1 MuJoCo Warp', None, None)
             if not self.window:
                 raise RuntimeError('GLFW could not create an OpenGL window')
+            _active_viewers.add(self)
             glfw.make_context_current(self.window)
             glfw.swap_interval(0)  # Explicit frame pacing below.
             glfw.set_mouse_button_callback(self.window, self.mouse_button)
@@ -126,6 +145,20 @@ class MujocoViewer:
         mujoco.mjv_moveCamera(self.model, mujoco.mjtMouse.mjMOUSE_ZOOM,
                              0, .05 * y_offset, self.camera)
 
+    def command_directions(self):
+        """Read held keys after render polls events; opposite keys cancel.
+
+        Commands use robot axes: +x forward, +y left, +yaw turn left.
+        An unfocused or closed window supplies zero on every axis.
+        """
+        if not self.is_running or not glfw.get_window_attrib(self.window, glfw.FOCUSED):
+            return (0, 0, 0)
+        def pressed(key):
+            return int(glfw.get_key(self.window, key) == glfw.PRESS)
+        return (pressed(glfw.KEY_UP) - pressed(glfw.KEY_DOWN),
+                pressed(glfw.KEY_LEFT) - pressed(glfw.KEY_RIGHT),
+                pressed(glfw.KEY_A) - pressed(glfw.KEY_D))
+
     def set_camera(self):
         if self.camera_mode_target == self.camera_mode:
             return
@@ -152,6 +185,12 @@ class MujocoViewer:
         ]
         self.overlay[mujoco.mjtGridPos.mjGRID_BOTTOMRIGHT] = [
             'Display FPS', f'{1 / max(self.time_per_render, 1e-9):.0f}']
+        if getattr(self, 'joystick', False):
+            vx, vy, wz = self.command_values
+            self.overlay[mujoco.mjtGridPos.mjGRID_TOPRIGHT] = [
+                'Up/Down: vx\nLeft/Right: vy\nA/D: wz\nRelease keys: zero',
+                f'{vx:+.2f} m/s\n{vy:+.2f} m/s\n{wz:+.2f} rad/s\n',
+            ]
 
     def _draw(self, data):
         glfw.make_context_current(self.window)
@@ -223,6 +262,7 @@ class MujocoViewer:
         if self._closed:
             return
         self._closed = True
+        _active_viewers.discard(self)
         if self.window:
             glfw.make_context_current(self.window)
         if self.context is not None:

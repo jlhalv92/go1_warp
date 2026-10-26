@@ -3,6 +3,56 @@ import numpy as np
 import mujoco
 
 
+def terrain_buffer_width(config, kind):
+    """Retain older stair-buffer overrides while providing support for all types."""
+    legacy = (config.terrain_downstairs_buffer if kind == 'downstairs'
+              else config.terrain_upstairs_buffer if kind in ('flat', 'upstairs') else 0.)
+    return max(config.terrain_buffer_width, legacy)
+
+
+def terrain_half_extent(config, kind):
+    core = config.terrain_boxy_tile_size if kind == 'boxy' else config.terrain_tile_size
+    return core / 2 + terrain_buffer_width(config, kind)
+
+
+def terrain_spacing(config):
+    """Requested spacings are minima; keep full buffered footprints 1 m apart."""
+    width = max(2 * terrain_half_extent(config, kind) for kind in config.terrain_types)
+    return max(config.terrain_tile_spacing, width + 1.), max(config.terrain_row_spacing, width + 1.)
+
+
+def boxy_heights(tile_size, max_height, seed=None, max_step_height=0.):
+    """Seeded 1 m-cell heights with a zero platform and optional adjacent-step cap.
+
+    Relaxing heights downward propagates low cells through their neighbours.
+    The result retains [0, max_height] and bounds every horizontal/vertical
+    height difference (including diagonals), including the first platform exit.
+    """
+    n = int(round(tile_size))
+    cells = 2 if n % 2 == 0 else 1
+    start = (n - cells) // 2
+    rng = np.random.default_rng(seed)
+    heights = np.zeros((n, n))
+    for row in range(n):
+        for col in range(n):
+            if not (start <= row < start + cells and start <= col < start + cells):
+                heights[row, col] = rng.uniform(0., max_height)
+    if max_step_height > 0:
+        for _ in range(2 * (n - 1)):
+            previous = heights.copy()
+            heights[1:] = np.minimum(heights[1:], previous[:-1] + max_step_height)
+            heights[:-1] = np.minimum(heights[:-1], previous[1:] + max_step_height)
+            heights[:, 1:] = np.minimum(heights[:, 1:], previous[:, :-1] + max_step_height)
+            heights[:, :-1] = np.minimum(heights[:, :-1], previous[:, 1:] + max_step_height)
+            heights[1:, 1:] = np.minimum(heights[1:, 1:], previous[:-1, :-1] + max_step_height)
+            heights[:-1, :-1] = np.minimum(heights[:-1, :-1], previous[1:, 1:] + max_step_height)
+            heights[1:, :-1] = np.minimum(heights[1:, :-1], previous[:-1, 1:] + max_step_height)
+            heights[:-1, 1:] = np.minimum(heights[:-1, 1:], previous[1:, :-1] + max_step_height)
+            if np.array_equal(heights, previous):
+                break
+    return heights
+
+
 def boxy_terrain(
     spec=None,
     grid_loc=(0.0, 0.0),
@@ -13,6 +63,8 @@ def boxy_terrain(
     floor_name="floor",
     terrain_group=5,
     seed=None,
+    buffer_width=0.,
+    max_step_height=0.,
 ):
     """
     Square terrain with 1 x 1 m cells and a central flat platform.
@@ -50,7 +102,9 @@ def boxy_terrain(
     if not np.isfinite(base_thickness) or base_thickness <= 0:
         raise ValueError("base_thickness must be positive and finite.")
 
-    rng = np.random.default_rng(seed)
+    if not np.isfinite(buffer_width) or buffer_width < 0 or not np.isfinite(max_step_height) or max_step_height < 0:
+        raise ValueError('Buffer and adjacent step height must be finite and nonnegative.')
+    heights = boxy_heights(n, max_height, seed, max_step_height)
 
     half = tile_size / 2
     bottom = -base_thickness
@@ -101,7 +155,7 @@ def boxy_terrain(
     add_box(
         suffix="platform",
         xy=[0.0, 0.0],
-        half_xy=[platform_cells / 2, platform_cells / 2],
+        half_xy=[platform_cells / 2 + (buffer_width if platform_cells == n else 0.)] * 2,
         top=0.0,
     )
 
@@ -116,14 +170,18 @@ def boxy_terrain(
             if is_platform:
                 continue
 
-            x = -half + col + 0.5
-            y = half - row - 0.5
-            top = float(rng.uniform(0.0, max_height))
+            # Extend perimeter cells at their own height: no new step at the
+            # core/buffer seam and no extra geometry or overlapping platforms.
+            xmin = -half + col - (buffer_width if col == 0 else 0.)
+            xmax = -half + col + 1 + (buffer_width if col == n - 1 else 0.)
+            ymin = half - row - 1 - (buffer_width if row == n - 1 else 0.)
+            ymax = half - row + (buffer_width if row == 0 else 0.)
+            top = float(heights[row, col])
 
             add_box(
                 suffix=f"cell_{row}_{col}",
-                xy=[x, y],
-                half_xy=[0.5, 0.5],
+                xy=[(xmin + xmax) / 2, (ymin + ymax) / 2],
+                half_xy=[(xmax - xmin) / 2, (ymax - ymin) / 2],
                 top=top,
             )
 
@@ -298,22 +356,23 @@ def build_terrain_model(config):
     floor=next(g for g in spec.geoms if g.name=='floor')
     floor.pos[2]=config.terrain_background_z
     origins=np.zeros((4,config.terrain_levels,3),dtype=np.float32)
+    spacing_x, spacing_y = terrain_spacing(config)
     for row,name in enumerate(config.terrain_types):
         code=TERRAIN_TYPES.index(name)
         for level in range(config.terrain_levels):
             ratio=level/max(1,config.terrain_levels-1)
-            xy=(level*config.terrain_tile_spacing,row*config.terrain_row_spacing)
+            xy=(level*spacing_x,row*spacing_y)
             prefix=f'terrain_{name}_{level}'
             if name=='boxy' and level>0:
                 boxy_terrain(spec,xy,prefix,tile_size=config.terrain_boxy_tile_size,
                              max_height=config.terrain_max_box_height*ratio,
-                             base_thickness=config.terrain_base_thickness,seed=config.terrain_seed)
+                             base_thickness=config.terrain_base_thickness,seed=config.terrain_seed,
+                             buffer_width=terrain_buffer_width(config, name),
+                             max_step_height=config.terrain_boxy_max_step_height*ratio)
             else:
                 direction=1 if name=='downstairs' else -1
                 step_height=config.terrain_max_step_height*ratio if name in ('upstairs','downstairs') else 0.
-                buffer=(config.terrain_downstairs_buffer if name=='downstairs'
-                        else config.terrain_upstairs_buffer)
-                if name=='boxy': buffer=0.
+                buffer=terrain_buffer_width(config, name)
                 stairs(spec,xy,name=prefix,num_stairs=config.terrain_num_stairs,
                        tile_size=(config.terrain_boxy_tile_size if name=='boxy' else config.terrain_tile_size),
                        step_height=step_height,step_depth=config.terrain_step_depth,

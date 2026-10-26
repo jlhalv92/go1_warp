@@ -11,7 +11,7 @@ Uses the existing env.step/reset API; does not remove its GPU synchronizations.
 import math
 import operator
 import torch
-from .ppo import EpisodeReturns
+from src.algorithms.ppo import EpisodeReturns
 from tqdm import trange
 
 
@@ -19,7 +19,7 @@ from tqdm import trange
 def evaluate(agent,
              env,
              n_steps=1000, gamma=.99,
-             seed=10000, stochastic=False):
+             seed=10000, stochastic=False, *, step_callback=None):
     """Run exactly n_steps batched calls = n_steps * env.num_envs transitions.
 
     Every world contributes at every step. Reset terminated/truncated worlds
@@ -31,6 +31,8 @@ def evaluate(agent,
     separate eval_env, never the live training env with a pending rollout.
     Restores agent train/eval mode and Torch RNG state even on an exception.
     Returns Python numbers; final metric conversion synchronizes GPU work.
+    Optional step_callback(env, completed_steps) runs after physics and before
+    any reset, allowing video capture without changing the evaluation window.
     """
     n_steps = operator.index(n_steps)
     if n_steps < 1:
@@ -60,6 +62,8 @@ def evaluate(agent,
             for t in trange(n_steps):
                 action = agent.distribution(obs).sample() if stochastic else agent.actor(obs)
                 obs, reward, terminated, truncated, _ = env.step(action)
+                if step_callback is not None:
+                    step_callback(env, t + 1)
                 window_R += reward
                 window_J += discount * reward
                 discount *= gamma

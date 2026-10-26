@@ -24,10 +24,13 @@ class TerrainConfig(DomainRandomizationConfig):
     terrain_boxy_tile_size: int = 10
     terrain_tile_spacing: float = 14.
     terrain_row_spacing: float = 14.
+    terrain_buffer_width: float = 5.  # Minimum support beyond every core tile edge.
+    terrain_exit_margin: float = 1.  # Base-to-outer-edge clearance at truncation.
     terrain_num_stairs: int = 6
     terrain_step_depth: float = .24
     terrain_max_step_height: float = .15
     terrain_max_box_height: float = .30
+    terrain_boxy_max_step_height: float = .12  # Adjacent-cell limit at the hardest level; 0 disables.
     terrain_upstairs_buffer: float = 2.5
     terrain_downstairs_buffer: float = 2.
     terrain_base_thickness: float = .1
@@ -98,13 +101,13 @@ class TerrainConfig(DomainRandomizationConfig):
             raise ValueError('Height grid dimensions must be odd so the base origin is sampled')
         for name in ('terrain_tile_size', 'terrain_boxy_tile_size', 'terrain_tile_spacing',
                      'terrain_row_spacing', 'terrain_step_depth', 'terrain_base_thickness',
-                     'terrain_spawn_clearance', 'terrain_exit_radius', 'height_grid_x',
+                     'terrain_spawn_clearance', 'terrain_exit_radius', 'terrain_exit_margin', 'height_grid_x',
                      'height_grid_y', 'height_max_distance', 'height_scale',
                      'reward_xy_temperature', 'reward_yaw_temperature'):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f'{name} must be finite and positive')
-        for name in ('terrain_max_step_height','terrain_max_box_height', 'terrain_upstairs_buffer',
+        for name in ('terrain_max_step_height','terrain_max_box_height', 'terrain_boxy_max_step_height', 'terrain_upstairs_buffer',
                      'terrain_downstairs_buffer', 'height_noise', 'height_clip',
                      'height_extent_x', 'height_extent_y', 'terrain_fall_height',
                      'terrain_foot_force_threshold', 'terrain_trunk_force_threshold',
@@ -118,10 +121,11 @@ class TerrainConfig(DomainRandomizationConfig):
             raise ValueError('Ray and terrain reference heights must be finite')
         if self.terrain_background_z>=0:
             raise ValueError('terrain-background-z must be below tile surfaces to avoid overlapping ground')
-        width = max(self.terrain_boxy_tile_size, self.terrain_tile_size+
-                    2*max(self.terrain_upstairs_buffer,self.terrain_downstairs_buffer))
-        if min(self.terrain_tile_spacing, self.terrain_row_spacing) <= width:
-            raise ValueError('Tile/row spacing must exceed the largest tile including buffers')
+        if not math.isfinite(self.terrain_buffer_width) or self.terrain_buffer_width < 5:
+            raise ValueError('terrain-buffer-width must be at least 5 metres')
+        from .terrains import terrain_half_extent
+        if any(self.terrain_exit_margin >= terrain_half_extent(self, kind) for kind in self.terrain_types):
+            raise ValueError('terrain-exit-margin must leave a positive usable tile radius')
         if self.terrain_contact_timeconst < 2*.005:
             raise ValueError('terrain-contact-timeconst must be >=0.01 for the bundled timestep')
         if self.height_ray_top <= max(self.terrain_num_stairs*self.terrain_max_step_height,

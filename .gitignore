@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+runs/
+logs/
+*.tmp
+*.pt
+wandb/
+*.egg-info/
+build/
+dist/
+videos

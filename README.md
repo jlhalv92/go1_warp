@@ -4,7 +4,9 @@ Batched Unitree Go1 velocity tracking with MuJoCo Warp physics, PyTorch control
 and rewards, and continuous PPO. Training and playback select their environment
 through the same factory. The default `flat` environment includes collision
 penalties and foot airtime rewards; `blind` retains physical collisions but
-omits contact queries and contact rewards.
+omits contact queries and contact rewards. The `terrain` variant adds tiled
+flat/upstairs/downstairs/boxy scenes, independent curricula and a ray height grid.
+See [the terrain guide](docs/TERRAIN.md) for commands and observation details.
 
 ## Install
 
@@ -35,6 +37,8 @@ src/
         config.py                EnvConfig dataclass
         go1.py                   fast contact-enabled flat environment
         go1_blind.py             contact-blind reward variant
+        go1_terrain.py           tiled terrains with ray height observations
+        terrain_config.py       terrain dataclass and reward/curriculum settings
         domain_randomized.py     DomainRandomizationConfig and randomized environment
         collisions.py            geom-group contact helpers
         model.py                 model loading
@@ -149,7 +153,46 @@ measurements and their synchronization overhead.
 python play.py runs/LLC_PPO/run_0/best.pt --num-envs 1
 python play.py runs/LLC_PPO/run_0/best.pt --num-envs 10 --headless --steps 1000
 python play.py runs/LLC_PPO/run_0/best.pt --unpaced --world-id 0
+python play.py runs/LLC_PPO/run_0/best.pt --joystick \
+    --command-vx 1.0 --command-vy 0.5 --command-wz 1.0
+# Record one world without opening a window:
+python play.py runs/LLC_PPO/run_0/best.pt --headless --record-video --steps 1000
+# Record while using the viewer or keyboard commands:
+python play.py runs/LLC_PPO/run_0/best.pt --joystick --record-video
 ```
+
+`--joystick` enables keyboard commands while the viewer has focus. Hold Up/Down
+for forward/backward velocity, Left/Right for left/right sideways velocity, and
+A/D for left/right yaw. The positive directions are robot-frame +x, +y and +yaw.
+Each axis returns to zero when its keys are released; opposite keys cancel.
+Commands also become zero if the viewer loses focus. The command-speed flags
+above set the held-key magnitudes (m/s, m/s and rad/s); omitted values inherit
+the checkpoint settings. All worlds receive the same commands, including after
+resets. Random command sampling is disabled in this mode. Keyboard control
+requires a viewer and cannot be combined with `--headless`.
+
+`--record-video` saves an MP4 under repository-root `videos/` (override with
+`--video-dir`). `--world-id` selects the recorded/displayed world. Defaults are
+1280 × 720 at 30 FPS; use `--video-width`, `--video-height` and `--video-fps` to
+change them. Video follows simulation time, so `--unpaced`, pauses and rendering
+speed do not change its playback speed. The windowed recording follows the
+viewer camera; headless recording uses the tracking camera. Terminal states are
+captured before resets. Frames stream to FFmpeg instead of accumulating in RAM.
+
+On Linux the independent offscreen renderer selects EGL automatically, with no
+graphics export required. `--video-backend osmesa` selects software rendering
+when libOSMesa is installed. Install a system FFmpeg, or its bundled executable:
+
+```bash
+python -m pip install -r requirements-video.txt
+```
+
+Training also accepts `--record-video`: it records the initial evaluation and
+each scheduled evaluation, naming files by experiment/run/epoch. Select its world
+with `--video-world-id` (default 0, less than `--eval-envs`). Collection is never
+recorded. Rendering, selected-world GPU-to-CPU copies and encoding add evaluation
+time, so disable recording for throughput benchmarks. See
+[the video guide](docs/VIDEO.md) for examples and backend details.
 
 Saved physics, environment variant and randomization settings are inherited.
 Explicit CLI options override them. Playback has its own runtime defaults for
@@ -243,7 +286,7 @@ python -m unittest discover -s tests -v
 python demo.py --environment flat --backend mujoco --device cpu --num-envs 3 --steps 20
 ```
 
-Tests cover PPO/GAE, reset isolation, collision and airtime rewards, configuration
+Tests cover terrain generation/rays/curricula, PPO/GAE, reset isolation, collision and airtime rewards, configuration
 precedence, checkpoint/log output, playback, asset paths, and domain physics.
 Real Warp CPU kernels validate batched randomized model fields and derived
 constants against separate CPU MuJoCo models. CUDA graph execution and RTX 4090

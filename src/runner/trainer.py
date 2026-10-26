@@ -29,9 +29,9 @@ import torch
 from tqdm import trange, tqdm
 from src.envs import make_env
 from .config import parse_train_args as parse_args
-from .paths import run_paths
+from src.runner.utils.paths import run_paths
 from src.networks import ActorCritic
-from .ppo import EpisodeReturns, Rollout, ppo_update
+from src.algorithms.ppo import EpisodeReturns, Rollout, ppo_update
 from .evaluation import evaluate
 
 
@@ -205,8 +205,21 @@ def train(args):
                 torch.cuda.synchronize(env.device)
             return time.perf_counter()
 
+        def evaluate_policy(epoch):
+            if not args.record_video:
+                return evaluate(agent, eval_env, args.n_steps_test, args.gamma,
+                                args.seed + 10000, args.stochastic_eval)
+            from .video import make_video
+            label = (f'{args.experiment_name}_run{args.run_id}_eval_epoch{epoch:04d}'
+                     f'_world{args.video_world_id}')
+            with make_video(eval_env, args, label, args.video_world_id) as video:
+                result = evaluate(agent, eval_env, args.n_steps_test, args.gamma,
+                                  args.seed + 10000, args.stochastic_eval, step_callback=video.capture)
+            tqdm.write(f'Evaluation video: {video.path} ({video.frames} frames)')
+            return result
+
         initial_evaluation_start = stamp()
-        metrics = evaluate(agent, eval_env, args.n_steps_test, args.gamma, args.seed + 10000, args.stochastic_eval)
+        metrics = evaluate_policy(start_epoch)
         initial_evaluation_seconds = stamp() - initial_evaluation_start
         tqdm.write(f'Initial evaluation time: {initial_evaluation_seconds:.3f}s (includes first-use warmup)')
         metrics.update(epoch=start_epoch, update=update, global_step=global_step)
@@ -350,8 +363,7 @@ def train(args):
 
             if epoch % args.eval_every == 0 or epoch == args.n_epochs:
                 evaluation_start = stamp()
-                metrics = evaluate(agent, eval_env, args.n_steps_test, args.gamma,
-                                   args.seed + 10000, args.stochastic_eval)
+                metrics = evaluate_policy(epoch)
                 evaluation_seconds = stamp() - evaluation_start
                 metrics.update(epoch=epoch, update=update, global_step=global_step)
                 log_start = time.perf_counter()

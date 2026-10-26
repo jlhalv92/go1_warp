@@ -257,6 +257,7 @@ class Go1WarpEnv:
             self.qfrc_actuator = torch.zeros((c.num_envs, m.nv))
         self.actions = torch.zeros((c.num_envs, 12), device=self.device)
         self.commands = torch.zeros((c.num_envs, 3), device=self.device)
+        self.manual_commands = False  # Playback may supply commands instead of sampling.
         self.steps = torch.zeros(c.num_envs, dtype=torch.long, device=self.device)
         self.needs_reset = torch.zeros(c.num_envs, dtype=torch.bool, device=self.device)
         self._collisions = CollisionDetector(m, self.num_envs, self.device, groups=self._collision_groups())
@@ -407,7 +408,7 @@ class Go1WarpEnv:
         return torch.rand(shape, device=self.device, generator=self.rng)
 
     def _sample_commands(self, ids):
-        if ids.numel() == 0:
+        if self.manual_commands or ids.numel() == 0:
             return
         hi = self._command_limits
         lo = -hi

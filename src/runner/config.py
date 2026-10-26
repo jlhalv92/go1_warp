@@ -1,16 +1,26 @@
 """Dataclasses are the defaults; argparse supplies explicit overrides."""
 import argparse
-from dataclasses import dataclass, fields
+import math
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
 
-from src.envs.domain_randomized import DomainRandomizationConfig
 from src.envs.terrain_config import TerrainConfig, TERRAIN_TYPES
-from .paths import rooted
+from src.runner.utils.paths import rooted
 
 
 @dataclass
-class TrainConfig(TerrainConfig):
+class VideoConfig:
+    record_video: bool = False
+    video_dir: str = 'videos'
+    video_fps: float = 30.
+    video_width: int = 1280
+    video_height: int = 720
+    video_backend: str = 'auto'
+
+
+@dataclass
+class TrainConfig(TerrainConfig, VideoConfig):
     environment: str = 'flat'
     kp: float = 30.
     kd: float = .8
@@ -46,6 +56,7 @@ class TrainConfig(TerrainConfig):
     log_std_max: float = 2.
     eval_envs: int = 4
     eval_every: int = 1
+    video_world_id: int = 0
     stochastic_eval: bool = False
     save_epochs: bool = False
     save_every: int = 10
@@ -60,7 +71,7 @@ class TrainConfig(TerrainConfig):
 
 
 @dataclass
-class PlayConfig(TerrainConfig):
+class PlayConfig(TerrainConfig, VideoConfig):
     environment: str = 'flat'
     kp: float = 30.
     kd: float = .8
@@ -71,6 +82,8 @@ class PlayConfig(TerrainConfig):
     checkpoint: str = ''
     steps: int = 10000
     headless: bool = False
+    joystick: bool = field(default=False, metadata={
+        'help': 'Control velocity commands with arrow keys and A/D in the viewer'})
     stochastic: bool = False
     unpaced: bool = False
     world_id: int = 0
@@ -90,6 +103,7 @@ ALIASES = {
 CHOICES = {'environment': ('flat', 'domain_randomized', 'blind', 'terrain'),
            'terrain_types': TERRAIN_TYPES, 'terrain_observation_layout': ('legacy','compact'),
            'backend': ('warp', 'mujoco'), 'schedule': ('adaptive', 'fixed'),
+           'video_backend': ('auto', 'egl', 'osmesa'),
            'wandb_mode': ('online', 'offline', 'disabled')}
 
 
@@ -182,6 +196,17 @@ def validate_environment(config):
         config.validate_terrain()
 
 
+def validate_video(config):
+    if not math.isfinite(config.video_fps) or config.video_fps <= 0:
+        raise ValueError('video-fps must be finite and positive')
+    if min(config.video_width, config.video_height) < 2 or config.video_width % 2 or config.video_height % 2:
+        raise ValueError('video-width and video-height must be positive even numbers')
+    if config.video_backend not in CHOICES['video_backend']:
+        raise ValueError('Unknown video backend')
+    if not config.video_dir:
+        raise ValueError('video-dir must not be empty')
+
+
 def parse_train_args(argv=None):
     parser = config_parser(TrainConfig, 'Train Go1 with continuous PPO.')
     explicit = vars(parser.parse_args(argv))
@@ -195,6 +220,9 @@ def parse_train_args(argv=None):
         config.profile_runtime = True
     try:
         validate_environment(config)
+        validate_video(config)
+        if config.record_video and not 0 <= config.video_world_id < config.eval_envs:
+            raise ValueError('video-world-id must be within eval-envs')
         for name in ('n_steps', 'n_epochs', 'n_steps_per_fit', 'n_steps_test', 'n_minibatches',
                      'n_epochs_policy', 'eval_envs', 'eval_every', 'torch_threads'):
             if getattr(config, name) < 1:
@@ -226,6 +254,12 @@ def parse_play_args(argv=None):
     config = _construct(PlayConfig, explicit)
     if config.steps < 1 or config.torch_threads < 1:
         parser.error('steps and torch-threads must be positive')
+    if config.joystick and config.headless:
+        parser.error('--joystick requires the viewer; omit --headless')
+    try:
+        validate_video(config)
+    except ValueError as error:
+        parser.error(str(error))
     return config
 
 
@@ -243,6 +277,9 @@ def resolve_play_config(config, checkpoint):
         result.terrain_eval_level=result.terrain_start_level
     result.checkpoint = str(rooted(result.checkpoint))
     validate_environment(result)
+    validate_video(result)
+    if result.joystick and result.headless:
+        raise ValueError('--joystick requires the viewer; omit --headless')
     if not 0 <= result.world_id < result.num_envs:
         raise ValueError('world-id must be within num-envs')
     return result

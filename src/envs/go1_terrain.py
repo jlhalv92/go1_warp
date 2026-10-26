@@ -7,7 +7,7 @@ import mujoco
 from .go1 import Go1WarpEnv
 from .collisions import DEFAULT_COLLISION_GROUPS
 from .terrain_config import TerrainConfig,TERRAIN_TYPES
-from .terrains import build_terrain_model
+from .terrains import build_terrain_model, terrain_half_extent, terrain_spacing
 from .height_sampler import TerrainHeightSampler
 from .command_curriculum import RewardThresholdCurriculum
 from .terrain_rewards import terrain_reward
@@ -22,7 +22,8 @@ class TerrainGo1Env(Go1WarpEnv):
         self.evaluation_mode=False
         super().__init__(cfg)
         print(f'[TerrainGo1Env] types={self.terrain_counts}; observations={self.num_observations}; '
-              f'height_grid={cfg.height_grid_x}x{cfg.height_grid_y}; terrain_levels={cfg.terrain_levels}')
+              f'height_grid={cfg.height_grid_x}x{cfg.height_grid_y}; terrain_levels={cfg.terrain_levels}; '
+              f'buffer>={cfg.terrain_buffer_width:g}m; spacing={terrain_spacing(cfg)}m')
 
     def _load_model(self):
         model,self._origins_host=build_terrain_model(self.cfg)
@@ -56,6 +57,9 @@ class TerrainGo1Env(Go1WarpEnv):
         self.terrain_counts=dict(zip(c.terrain_types,counts))
         codes=[TERRAIN_TYPES.index(name) for name,count in zip(c.terrain_types,counts) for _ in range(count)]
         self.terrain_type=torch.tensor(codes,dtype=torch.long,device=self.device)
+        radii=[min(c.terrain_exit_radius,terrain_half_extent(c,TERRAIN_TYPES[code])-c.terrain_exit_margin)
+               for code in codes]
+        self.terrain_exit_radius=torch.tensor(radii,device=self.device)
         self.terrain_level=torch.full((self.num_envs,),c.terrain_start_level,dtype=torch.long,device=self.device)
         self.terrain_completed=torch.zeros(self.num_envs,dtype=torch.bool,device=self.device)
         self.terrain_level[self.terrain_type==0]=0
@@ -99,7 +103,9 @@ class TerrainGo1Env(Go1WarpEnv):
         elif self._terrain_initialized and c.terrain_curriculum:
             eligible=self.needs_reset[ids]&(self.terrain_type[ids]!=0)
             distance=(self.qpos[ids,:2]-self.terrain_origin[ids,:2]).norm(dim=-1)
-            promote=distance>c.terrain_promotion_distance
+            # Small custom tiles must still be able to reach the promotion threshold.
+            promote=distance>torch.minimum(torch.full_like(distance,c.terrain_promotion_distance),
+                                           .8*self.terrain_exit_radius[ids])
             demote=(distance<c.terrain_demotion_factor*self.commands[ids,:2].norm(dim=-1)*
                     c.terrain_demotion_seconds)&~promote
             level=self.terrain_level[ids]+promote.long()-demote.long()
@@ -126,7 +132,7 @@ class TerrainGo1Env(Go1WarpEnv):
         self.foot_contact[ids]=foot[ids]
 
     def _sample_commands(self,ids):
-        if ids.numel()==0: return
+        if self.manual_commands or ids.numel()==0: return
         c=self.cfg
         if c.command_curriculum and not self.evaluation_mode:
             steps=self.command_tracking_steps[ids].clamp_min(1)
@@ -175,7 +181,7 @@ class TerrainGo1Env(Go1WarpEnv):
         ground=self.height_sampler.heights[:,center]
         terminated=(~finite)|self.trunk_collision|((self.qpos[:,2]-ground)<self.cfg.terrain_fall_height)
         distance=(self.qpos[:,:2]-self.terrain_origin[:,:2]).norm(dim=-1)
-        truncated=(self.steps>=self.max_episode_steps)|(distance>=self.cfg.terrain_exit_radius)
+        truncated=(self.steps>=self.max_episode_steps)|(distance>=self.terrain_exit_radius)
         return terminated,truncated
 
     def observations(self):
