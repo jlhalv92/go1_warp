@@ -92,15 +92,71 @@ class TerrainGo1Env(Go1WarpEnv):
             self.command_generator.manual_seed(seed+1543)
             self.level_generator.manual_seed(seed+4513)
             self.height_sampler.generator.manual_seed(seed+8191)
+
+
+
+        # if self.evaluation_mode:
+        #
+        #
+        #     # One deterministic level assignment per evaluation window, fixed
+        #     # across within-window resets, so short episodes do not resample it.
+        #
+        #     if seed is not None:
+        #         levels=(torch.full((len(ids),),c.terrain_eval_level,device=self.device,dtype=torch.long)
+        #                 if c.terrain_eval_level>=0 else torch.randint(c.terrain_levels,(len(ids),),
+        #                                         generator=self.level_generator,device=self.device))
+        #
+        #         self.terrain_level[ids]=torch.where(self.terrain_type[ids]==0,0,levels)
         if self.evaluation_mode:
-            # One deterministic level assignment per evaluation window, fixed
-            # across within-window resets, so short episodes do not resample it.
+            # Assign difficulty at the beginning of each evaluation window.
+            # Resets without a seed retain the assigned difficulty.
             if seed is not None:
-                levels=(torch.full((len(ids),),c.terrain_eval_level,device=self.device,dtype=torch.long)
-                        if c.terrain_eval_level>=0 else torch.randint(c.terrain_levels,(len(ids),),
-                                                generator=self.level_generator,device=self.device))
-                self.terrain_level[ids]=torch.where(self.terrain_type[ids]==0,0,levels)
+                if c.terrain_eval_all_levels:
+                    combinations = len(c.terrain_types) * c.terrain_levels
+
+                    if self.num_envs % combinations != 0:
+                        raise ValueError(
+                            "Evaluating all terrain levels requires the "
+                            "evaluation world count to be a multiple of "
+                            f"{combinations}. Set --eval-envs during training "
+                            "or --num-envs during playback."
+                        )
+
+                    if c.terrain_eval_level >= 0:
+                        raise ValueError(
+                            "--terrain-eval-all-levels requires "
+                            "--terrain-eval-level -1."
+                        )
+
+                    # Worlds are grouped into equally sized terrain blocks.
+                    # Each block contains complete repetitions of 0..L-1.
+                    levels = ids.remainder(c.terrain_levels)
+
+                elif c.terrain_eval_level >= 0:
+                    levels = torch.full(
+                        (len(ids),),
+                        c.terrain_eval_level,
+                        device=self.device,
+                        dtype=torch.long,
+                    )
+
+                else:
+                    levels = torch.randint(
+                        c.terrain_levels,
+                        (len(ids),),
+                        generator=self.level_generator,
+                        device=self.device,
+                    )
+
+                # Flat terrain has the same geometry at every difficulty.
+                self.terrain_level[ids] = torch.where(
+                    self.terrain_type[ids] == 0,
+                    0,
+                    levels,
+                )
         elif self._terrain_initialized and c.terrain_curriculum:
+
+
             eligible=self.needs_reset[ids]&(self.terrain_type[ids]!=0)
             distance=(self.qpos[ids,:2]-self.terrain_origin[ids,:2]).norm(dim=-1)
             # Small custom tiles must still be able to reach the promotion threshold.
@@ -108,12 +164,19 @@ class TerrainGo1Env(Go1WarpEnv):
                                            .8*self.terrain_exit_radius[ids])
             demote=(distance<c.terrain_demotion_factor*self.commands[ids,:2].norm(dim=-1)*
                     c.terrain_demotion_seconds)&~promote
+
             level=self.terrain_level[ids]+promote.long()-demote.long()
             completed=self.terrain_completed[ids]|(eligible&(level>=c.terrain_levels))
             random_level=torch.randint(c.terrain_levels,(len(ids),),generator=self.level_generator,device=self.device)
+
             level=torch.where(completed,random_level,level.clamp(0,c.terrain_levels-1))
+
             self.terrain_level[ids]=torch.where(eligible,level,self.terrain_level[ids])
             self.terrain_completed[ids]=completed
+
+
+
+
         self.terrain_origin[ids]=self.tile_origins[self.terrain_type[ids],self.terrain_level[ids]]
         self._terrain_initialized=True
 
@@ -180,6 +243,8 @@ class TerrainGo1Env(Go1WarpEnv):
         center=(self.cfg.height_grid_x//2)*self.cfg.height_grid_y+self.cfg.height_grid_y//2
         ground=self.height_sampler.heights[:,center]
         terminated=(~finite)|self.trunk_collision|((self.qpos[:,2]-ground)<self.cfg.terrain_fall_height)
+        #terminated=(~finite)|((self.qpos[:,2]-ground)<self.cfg.terrain_fall_height)
+
         distance=(self.qpos[:,:2]-self.terrain_origin[:,:2]).norm(dim=-1)
         truncated=(self.steps>=self.max_episode_steps)|(distance>=self.terrain_exit_radius)
         return terminated,truncated

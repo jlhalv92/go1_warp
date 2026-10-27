@@ -16,10 +16,12 @@ from .trainer import make_config
 def play(config):
     checkpoint = load_checkpoint(config.checkpoint)
     config = resolve_play_config(config, checkpoint)
+    config.terrain_eval_all_levels = False
     torch.set_num_threads(config.torch_threads)
     env = None
     video = None
     try:
+
         env = make_env(make_config(config, config.num_envs, config.seed))
         if hasattr(env,'set_evaluation_mode'): env.set_evaluation_mode(True)
         if config.joystick:

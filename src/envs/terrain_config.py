@@ -19,6 +19,7 @@ class TerrainConfig(DomainRandomizationConfig):
     terrain_levels: int = 8
     terrain_start_level: int = 0
     terrain_eval_level: int = -1  # -1: seeded uniform level per world, frozen within evaluation
+    terrain_eval_all_levels: bool = False
     terrain_curriculum: bool = True
     terrain_tile_size: float = 7.
     terrain_boxy_tile_size: int = 10
@@ -86,6 +87,7 @@ class TerrainConfig(DomainRandomizationConfig):
     reward_stand_still: float = 0.
     reward_xy_temperature: float = .25
     reward_yaw_temperature: float = .25
+
 
     def validate_terrain(self):
         if (not self.terrain_types or len(set(self.terrain_types)) != len(self.terrain_types)

@@ -150,6 +150,8 @@ def train(args):
     try:
         env = make_env(make_config(args, args.num_envs, args.seed))
         eval_env = make_env(make_config(args, args.eval_envs, args.seed + 10000))
+
+
         agent = ActorCritic(env.num_observations, env.num_actions, args.n_features).to(env.device)
         optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr, eps=1e-5)
 
@@ -209,7 +211,7 @@ def train(args):
             if not args.record_video:
                 return evaluate(agent, eval_env, args.n_steps_test, args.gamma,
                                 args.seed + 10000, args.stochastic_eval)
-            from .video import make_video
+            from src.runner.utils.video import make_video
             label = (f'{args.experiment_name}_run{args.run_id}_eval_epoch{epoch:04d}'
                      f'_world{args.video_world_id}')
             with make_video(eval_env, args, label, args.video_world_id) as video:

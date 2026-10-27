@@ -54,6 +54,7 @@ def evaluate(agent,
                 with torch.cuda.device(device):
                     torch.cuda.manual_seed(seed)
             obs, _ = env.reset(seed=seed)
+
             window_R = torch.zeros(env.num_envs, dtype=torch.float64, device=device)
             window_J = torch.zeros_like(window_R)
             episodes = EpisodeReturns(env.num_envs, device, gamma)

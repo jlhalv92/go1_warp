@@ -20,9 +20,9 @@ class EnvConfig:
     seed: int = 0
     reset_joint_noise: float = 0.03
     command_seconds: float = 5.0
-    command_vx: float = 1.0
+    command_vx: float = 1.5
     command_vy: float = 0.5
-    command_wz: float = 1.0
+    command_wz: float = 2.0 #1.5
     nominal_height: float = 0.34
     soft_joint_position_limit: float = 0.9
     use_physics_graph: bool = True  # Controls step, forward and reset graphs
